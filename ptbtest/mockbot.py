@@ -21,13 +21,19 @@
 """This module provides a class for a Mockbot"""
 
 import functools
+import io
 import logging
+import uuid
 import warnings
 
 import time
 
-from telegram import (User, ReplyMarkup, TelegramObject)
+from telegram import (User, ReplyMarkup, TelegramObject, Dice)
 from telegram.error import TelegramError
+from telegram.utils.request import Request
+
+from .mockfile import MockFile
+
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -60,14 +66,29 @@ class Mockbot(TelegramObject):
         username (Optional[str]): Username for this bot. Defaults to 'MockBot'"""
 
     def __init__(self, username="MockBot", **kwargs):
-        self._updates = []
-        self.bot = None
-        self._username = username
-        self._sendmessages = []
         from .messagegenerator import MessageGenerator
         from .chatgenerator import ChatGenerator
-        self.mg = MessageGenerator(bot=self)
-        self.cg = ChatGenerator()
+        object.__setattr__(self, '_updates', [])
+        object.__setattr__(self, 'bot', None)
+        object.__setattr__(self, '_username', username)
+        object.__setattr__(self, '_sendmessages', [])
+        object.__setattr__(self, 'mg', MessageGenerator(bot=self))
+        object.__setattr__(self, 'cg', ChatGenerator())
+        object.__setattr__(self, '_request', Request(con_pool_size=8))
+        object.__setattr__(self, 'defaults', None)
+        object.__setattr__(self, '_files', {})
+        object.__setattr__(self, '_fdata', {})
+        object.__setattr__(self, '_dice_values', [])
+
+    @property
+    def request(self):
+        return self._request
+
+    def set_update_queue(self, update_queue):
+        object.__setattr__(self, 'update_queue', update_queue)
+
+    def delete_webhook(self, timeout=None, **kwargs):
+        pass
 
     @property
     def sent_messages(self):
@@ -76,7 +97,7 @@ class Mockbot(TelegramObject):
     @property
     def updates(self):
         tmp = self._updates
-        self._updates = []
+        self._updates.clear()
         return tmp
 
     def reset(self):
@@ -190,7 +211,8 @@ class Mockbot(TelegramObject):
         return decorator
 
     def getMe(self, timeout=None, **kwargs):
-        self.bot = User(0, "Mockbot", last_name="Bot", username=self._username)
+        self.bot = User(0, "Mockbot", True,
+                        last_name="Bot", username=self._username)
         return self.bot
 
     @message
@@ -517,11 +539,24 @@ class Mockbot(TelegramObject):
 
         self._sendmessages.append(data)
 
+    def add_mock_file(self, file_obj):
+        fio = io.BytesIO()
+        fio.write(file_obj.read())
+        fio.seek(0)
+        file_id = str(uuid.uuid4())
+        self._fdata[file_id] = fio
+        mock_file = MockFile(file_id, file_id, self)
+        self._files[file_id] = mock_file
+        return mock_file
+
     def getFile(self, file_id, timeout=None, **kwargs):
         data = {'file_id': file_id}
 
         data['method'] = "getFile"
         self._sendmessages.append(data)
+        if file_id not in self._files:
+            raise Exception(f'File with file_id {file_id} not found')
+        return self._files[file_id]
 
     def kickChatMember(self, chat_id, user_id, timeout=None, **kwargs):
         data = {'chat_id': chat_id, 'user_id': user_id}
@@ -639,7 +674,7 @@ class Mockbot(TelegramObject):
 
         return data
 
-    def insertUpdate(self, update):
+    def insertUpdate(self, update, wait=True):
         """
         This inserts an update into the the bot's storage. these will be retreived on a call to
         getUpdates which is used by the :py:class:`telegram.Updater`. This way the updater can function without any
@@ -648,6 +683,11 @@ class Mockbot(TelegramObject):
         Args:
             update (telegram.Update): The update to insert in the queue.
         """
+        if getattr(self, 'update_queue', None):
+            self.update_queue.put(update)
+            if wait:
+                self.update_queue.join()
+            return
         self._updates.append(update)
         time.sleep(.3)
 
@@ -756,6 +796,23 @@ class Mockbot(TelegramObject):
         data['method'] = "getGameHighScores"
 
         self._sendmessages.append(data)
+
+    def setup_dice(self, values):
+        if not isinstance(values, list):
+            raise Exception('setup_dice values must be list of dice values')
+        self._dice_values = values
+
+    @message
+    def send_dice(self, chat_id, disable_notification=None,
+                  reply_to_message_id=None, reply_markup=None,
+                  timeout=None, emoji=None, api_kwargs=None,
+                  allow_sending_without_reply=None, protect_content=None):
+        value = self._dice_values.pop(0)
+        data = {}
+        data['dice'] = Dice(value=value, emoji=emoji)
+        if chat_id:
+            data['chat_id'] = chat_id
+        return data
 
     @staticmethod
     def de_json(data, bot):

@@ -22,6 +22,7 @@
 import datetime
 import time
 
+from .mockfile import MockFile
 from .updategenerator import update
 from .ptbgenerator import PtbGenerator
 from .entityparser import EntityParser
@@ -31,6 +32,7 @@ from ptbtest.errors import (BadUserException, BadMessageException,
                             BadMarkupException)
 from telegram import (Audio, Chat, Contact, Document, Location, Message,
                       PhotoSize, Sticker, User, Venue, Video, Voice)
+from telegram.messageentity import MessageEntity
 
 
 class MessageGenerator(PtbGenerator):
@@ -164,7 +166,9 @@ class MessageGenerator(PtbGenerator):
                     forward_from_message_id=None,
                     parse_mode=None,
                     channel=False,
-                    bot=None):
+                    bot=None,
+                    dice=None,
+                    **kwargs):
         """
         When called without arguments will return an update object for a message from a private chat with a
         random user. for modifiers see args.
@@ -234,9 +238,9 @@ class MessageGenerator(PtbGenerator):
 
         return Message(
             id or next(self.idgen),
-            user,
             None,
-            chat,
+            chat=chat,
+            from_user=user,
             text=text,
             forward_from=forward_from,
             forward_from_chat=forward_from_chat,
@@ -265,7 +269,8 @@ class MessageGenerator(PtbGenerator):
             pinned_message=pinned_message,
             forward_from_message_id=forward_from_message_id,
             forward_date=forward_date,
-            bot=bot or self.bot)
+            bot=bot or self.bot,
+            dice=dice)
 
     def _handle_attachments(self, audio, contact, document, location, photo,
                             sticker, user, venue, video, voice, caption):
@@ -283,7 +288,7 @@ class MessageGenerator(PtbGenerator):
             raise BadMessageException("can't add more than one attachment")
         if photo:
             if isinstance(photo, list):
-                if all([isinstance(x, PhotoSize) for x in photo]):
+                if all([isinstance(x, (PhotoSize, MockFile)) for x in photo]):
                     pass
                 else:
                     raise BadMessageException(
@@ -503,6 +508,12 @@ class MessageGenerator(PtbGenerator):
                 text, entities = EntityParser.parse_markdown(text)
         else:
             entities = []
+            if text and text[0] == '/':
+                offset = 0
+                cmd_len = len(text.split()[0])
+                cmd_entity = MessageEntity(MessageEntity.BOT_COMMAND,
+                                           offset, cmd_len)
+                entities.append(cmd_entity)
         return text, entities
 
     def _get_photosize(self):
@@ -512,7 +523,8 @@ class MessageGenerator(PtbGenerator):
         for _ in range(2):
             w, h = randint(40, 400), randint(40, 400)
             s = w * h * 0.3
-            tmp.append(PhotoSize(str(uuid.uuid4()), w, h, file_size=s))
+            file_id = file_unique_id = str(uuid.uuid4())
+            tmp.append(PhotoSize(file_id, file_unique_id, w, h, file_size=s))
         return tmp
 
     def _get_location(self):
